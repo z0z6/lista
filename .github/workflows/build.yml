@@ -1,0 +1,53 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalacja zależności
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Testy
+        run: python -m pytest -q tests
+
+      - name: Budowanie EXE (PyInstaller)
+        run: >
+          pyinstaller --noconfirm --clean --onefile --windowed
+          --name ListyObecnosci
+          --icon assets/icon.ico
+          --add-data "assets;assets"
+          --exclude-module PySide6.QtWebEngineCore
+          --exclude-module PySide6.QtWebEngineWidgets
+          --exclude-module PySide6.QtQuick
+          --exclude-module PySide6.QtQml
+          --exclude-module PySide6.Qt3DCore
+          main.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ListyObecnosci-windows
+          path: dist/ListyObecnosci.exe
+
+      - name: Publikacja w Releases (po otagowaniu vX.Y.Z)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/ListyObecnosci.exe
