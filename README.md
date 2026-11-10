@@ -4,7 +4,11 @@ Prosta aplikacja do generowania ujednoliconych list obecności (.docx) dla praco
 – w układzie zgodnym ze wzorem „Warsztat Terapii Zajęciowej Domino”.
 
 ## Co robi
-- **Pracownicy** – dodajesz raz, dane (imię i nazwisko, umowa, system czasu pracy, grafik) są pamiętane.
+- **Pracownicy** – dodajesz raz, dane (imię i nazwisko, umowa, forma pracy, wymiar czasu pracy, grafik) są pamiętane.
+- **Forma pracy**: *podstawowy system czasu pracy* → zwykła lista pracownika (8 kolumn z godzinami);
+  *zadaniowy system czasu pracy* → lista kierownika (6 kolumn, „Dzień wolny” za święto w sobotę).
+- **Wymiar czasu pracy**: cały etat / 3/4 / 1/2 / 1/4. Wymiar godzin w nagłówku liczy się sam
+  (8 h × dni robocze, minus 8 h za każde święto poza niedzielą; etat = ułamek, np. sierpień 2026 = 160 / 120 / 80 / 40 h).
 - **Grafik tygodniowy** – ustawiasz dni i godziny od–do; „Razem godz.” liczy się samo.
 - **Miesiąc** – podgląd tabeli; można zmienić pojedynczy dzień (godziny albo kod nieobecności C, Uw, Nn…).
   Zmiany dotyczą tylko danego miesiąca i też są zapisywane.

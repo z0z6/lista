@@ -12,10 +12,12 @@ from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFrame, QGridLayout
                                QStyledItemDelegate, QTableWidget, QTableWidgetItem, QTimeEdit,
                                QVBoxLayout, QWidget)
 
-from ..core.calendar_logic import build_month, default_for, month_total
+from ..core.calendar_logic import (DAY_OFF, build_month, default_for, is_task_system,
+                                    month_total, monthly_norm_hours)
 from ..core.docx_builder import build_docx
 from ..core.holidays_pl import MONTHS_PL, WEEKDAYS_PL, fetch_online, offline_holidays
-from ..core.storage import ABSENCE_CODES, TIME_SYSTEMS, Employee, Store
+from ..core.storage import (ABSENCE_CODES, FTE_OPTIONS, TIME_SYSTEMS, Employee, Store, fte_factor,
+                            fte_weekly_hours)
 from ..core.timeutil import format_hours, hours_between, normalize_time
 from .settings_dialog import SettingsDialog
 from .widgets import Segmented, Switch
@@ -37,6 +39,7 @@ class NoteDelegate(QStyledItemDelegate):
         cb.addItem("")
         for code, desc in ABSENCE_CODES.items():
             cb.addItem(f"{code} – {desc}")
+        cb.addItem(DAY_OFF)
         return cb
 
     def setEditorData(self, editor, index):
@@ -238,15 +241,12 @@ class MainWindow(QMainWindow):
         self.ed_contract = QLineEdit()
         self.ed_contract.textEdited.connect(lambda t: self._set_attr("contract", t))
         self.cb_system = QComboBox()
-        self.cb_system.setEditable(True)
         self.cb_system.addItems(TIME_SYSTEMS)
-        self.cb_system.editTextChanged.connect(lambda t: self._set_attr("time_system", t))
-        self.sw_auto = Switch(True)
-        self.sw_auto.toggled.connect(self._norm_mode_changed)
-        self.ed_norm = QLineEdit()
-        self.ed_norm.setPlaceholderText("np. 40")
-        self.ed_norm.setMaximumWidth(120)
-        self.ed_norm.textEdited.connect(lambda t: self._set_attr("norm_manual", t))
+        self.cb_system.currentIndexChanged.connect(self._system_changed)
+        self.cb_fte = QComboBox()
+        for name, _f, _h in FTE_OPTIONS:
+            self.cb_fte.addItem(name)
+        self.cb_fte.currentIndexChanged.connect(self._fte_changed)
         self.lb_norm_auto = QLabel("")
         self.lb_norm_auto.setObjectName("muted")
 
@@ -259,21 +259,14 @@ class MainWindow(QMainWindow):
         g.addWidget(self.ed_name, 0, 1)
         g.addWidget(lab("Dział / rodzaj umowy"), 1, 0)
         g.addWidget(self.ed_contract, 1, 1)
-        g.addWidget(lab("System czasu pracy"), 2, 0)
+        g.addWidget(lab("Forma pracy"), 2, 0)
         g.addWidget(self.cb_system, 2, 1)
         g.addWidget(lab("Wymiar czasu pracy"), 3, 0)
-        nr = QHBoxLayout()
-        nr.setSpacing(10)
-        nr.addWidget(self.sw_auto)
-        nr.addWidget(QLabel("liczony automatycznie z godzin w miesiącu"))
-        nr.addSpacing(10)
-        nr.addWidget(self.ed_norm)
-        nr.addWidget(QLabel("godz."))
-        nr.addStretch(1)
-        g.addLayout(nr, 3, 1)
+        g.addWidget(self.cb_fte, 3, 1)
         g.addWidget(self.lb_norm_auto, 4, 1)
         lay.addWidget(card)
-        hint = QLabel("Dane zapisują się automatycznie i są używane przy każdej kolejnej liście.")
+        hint = QLabel("Dane zapisują się automatycznie. Forma „zadaniowy” generuje listę kierownika, "
+                      "„podstawowy” – zwykłą listę pracownika.")
         hint.setObjectName("hint")
         lay.addWidget(hint)
         lay.addStretch(1)
@@ -389,6 +382,7 @@ class MainWindow(QMainWindow):
         self.title.setText(self.emp.name or "(bez nazwy)")
         self._load_employee_fields()
         self._load_schedule_fields()
+        self._apply_mode()
         self._refresh_month()
         self._mark_dirty()
 
@@ -434,18 +428,37 @@ class MainWindow(QMainWindow):
         self._populating = True
         self.ed_name.setText(e.name)
         self.ed_contract.setText(e.contract)
-        self.cb_system.setEditText(e.time_system)
-        self.sw_auto.setChecked(e.norm_auto)
-        self.ed_norm.setText(e.norm_manual)
-        self.ed_norm.setEnabled(not e.norm_auto)
+        self.cb_system.setCurrentIndex(max(TIME_SYSTEMS.index(e.time_system), 0))
+        self.cb_fte.setCurrentIndex(max(self.cb_fte.findText(e.fte), 0))
         self._populating = False
 
-    def _norm_mode_changed(self, auto: bool):
-        self.ed_norm.setEnabled(not auto)
+    def _system_changed(self, idx: int):
         if self._populating or not self.emp:
             return
-        self.emp.norm_auto = auto
+        self.emp.time_system = TIME_SYSTEMS[idx]
         self._mark_dirty()
+        self._apply_mode()
+        self._refresh_month()
+
+    def _fte_changed(self, idx: int):
+        if self._populating or not self.emp:
+            return
+        self.emp.fte = FTE_OPTIONS[idx][0]
+        self._mark_dirty()
+        self._refresh_month()
+
+    def _norm_hours(self) -> float:
+        holidays, _ = self._holidays(self.year)
+        return monthly_norm_hours(self.year, self.month, holidays, fte_factor(self.emp.fte))
+
+    def _apply_mode(self):
+        """Lista kierownika (zadaniowy): bez grafiku godzinowego i kolumn Od/Do/Razem."""
+        task = bool(self.emp) and is_task_system(self.emp)
+        self.seg.set_button_visible(1, not task)
+        if task and self.pages.currentIndex() == 1:
+            self.seg.set_index(0)
+        for c in (2, 3, 4):
+            self.table.setColumnHidden(c, task)
 
     # =====================================================================
     # grafik tygodniowy
@@ -502,11 +515,13 @@ class MainWindow(QMainWindow):
         holidays, _src = self._holidays(self.year)
         st = self.store.settings
         self._rows = build_month(self.emp, self.year, self.month, holidays, st.holiday_label)
+        task = is_task_system(self.emp)
         self._populating = True
         self.table.setRowCount(len(self._rows))
         base_font = self.table.font()
         for r, row in enumerate(self._rows):
-            vals = [str(row.day), row.weekday.capitalize() if False else row.weekday,
+            weekday = f"{row.weekday} – ŚWIĘTO" if (task and row.holiday_name) else row.weekday
+            vals = [str(row.day), weekday,
                     row.start if row.hours is not None else "",
                     row.end if row.hours is not None else "",
                     format_hours(row.hours), row.note]
@@ -528,8 +543,14 @@ class MainWindow(QMainWindow):
                 self.table.setItem(r, c, it)
         self._populating = False
         total = month_total(self._rows)
-        self.lb_total.setText(f"Razem w miesiącu: {format_hours(total) or '0'} godz.")
-        self.lb_norm_auto.setText(f"W tym miesiącu: {format_hours(total) or '0'} godz.")
+        norm = format_hours(self._norm_hours()) or "0"
+        weekly = fte_weekly_hours(self.emp.fte)
+        if task:
+            self.lb_total.setText(f"Wymiar czasu pracy: {norm} godz.")
+        else:
+            self.lb_total.setText(f"Zaplanowano: {format_hours(total) or '0'} godz.  ·  Wymiar: {norm} godz.")
+        self.lb_norm_auto.setText(f"{weekly} godz. tygodniowo  ·  w tym miesiącu: {norm} godz. "
+                                  "(z uwzględnieniem świąt)")
 
     def _cell_changed(self, item: QTableWidgetItem):
         if self._populating or not self.emp:
@@ -680,7 +701,8 @@ class MainWindow(QMainWindow):
         st = self.store.settings
         rows = build_month(emp, self.year, self.month, holidays, st.holiday_label)
         fname = f"lista_{MONTHS_PL[self.month - 1]}_{self.year}_{self._safe_name(emp.name)}.docx"
-        return build_docx(emp, st, self.year, self.month, rows, st.resolved_output_dir() / fname)
+        norm = monthly_norm_hours(self.year, self.month, holidays, fte_factor(emp.fte))
+        return build_docx(emp, st, self.year, self.month, rows, st.resolved_output_dir() / fname, norm)
 
     def generate_current(self):
         if not self.emp:

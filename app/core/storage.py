@@ -13,12 +13,27 @@ from ..paths import data_dir, default_output_dir
 
 DEFAULT_ORG = "Stowarzyszenie “Razem w Dorosłość” -  Warsztat Terapii Zajęciowej “Domino”"
 
+# Forma pracy: podstawowy -> zwykła lista obecności, zadaniowy -> lista kierownika
 TIME_SYSTEMS = [
     "podstawowy system czasu pracy",
-    "równoważny system czasu pracy",
     "zadaniowy system czasu pracy",
-    "przerywany system czasu pracy",
 ]
+
+# Wymiar czasu pracy: (nazwa, ułamek etatu, godzin tygodniowo)
+FTE_OPTIONS = [
+    ("cały etat", 1.0, 40),
+    ("3/4 etatu", 0.75, 30),
+    ("1/2 etatu", 0.5, 20),
+    ("1/4 etatu", 0.25, 10),
+]
+
+
+def fte_factor(label: str) -> float:
+    return next((f for n, f, _ in FTE_OPTIONS if n == label), 1.0)
+
+
+def fte_weekly_hours(label: str) -> int:
+    return next((h for n, _, h in FTE_OPTIONS if n == label), 40)
 
 ABSENCE_CODES = {
     "C": "choroba",
@@ -41,7 +56,6 @@ class Settings:
     output_dir: str = ""
     holiday_label: str = "Święto"
     keep_descriptors: bool = True      # opisy w nawiasach: "( miesiąc )" itd.
-    header_align: str = "center"       # center | left
     online_holidays: bool = True
 
     def resolved_output_dir(self) -> Path:
@@ -52,9 +66,8 @@ class Settings:
 class Employee:
     name: str = "Nowy pracownik"
     contract: str = "Umowa o pracę"
-    time_system: str = TIME_SYSTEMS[0]
-    norm_auto: bool = True             # wymiar = suma godzin z miesiąca
-    norm_manual: str = ""
+    time_system: str = TIME_SYSTEMS[0]  # forma pracy
+    fte: str = FTE_OPTIONS[0][0]        # wymiar czasu pracy (etat)
     # grafik tygodniowy: "0"(pn) .. "6"(nd) -> [od, do]
     schedule: dict = field(default_factory=dict)
     # zmiany jednorazowe: "YYYY-MM-DD" -> {"from": "", "to": "", "note": ""}
@@ -67,6 +80,10 @@ class Employee:
         for k, v in d.items():
             if hasattr(e, k):
                 setattr(e, k, v)
+        # migracja ze starszych wersji: tylko dwie formy pracy i znane etaty
+        e.time_system = TIME_SYSTEMS[1] if "zadaniowy" in str(e.time_system).lower() else TIME_SYSTEMS[0]
+        if e.fte not in [n for n, _, _ in FTE_OPTIONS]:
+            e.fte = FTE_OPTIONS[0][0]
         return e
 
 

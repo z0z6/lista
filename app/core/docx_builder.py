@@ -1,4 +1,8 @@
-"""Generator listy obecności (.docx) – odtwarza układ z wzoru użytkownika.
+"""Generator listy obecności (.docx) – odtwarza układ ze wzorów użytkownika.
+
+Dwa typy dokumentu:
+  * zwykły pracownik (podstawowy system czasu pracy) – 8 kolumn z godzinami,
+  * kierownik (zadaniowy system czasu pracy) – 6 kolumn: Obecność / Uwagi / Podpis przełożonego.
 
 Dokument powstaje na bazie szablonu (assets/szablon.docx), dzięki czemu zachowuje
 style, czcionki i ustawienia strony oryginału (A4, marginesy 2,5 cm).
@@ -12,7 +16,7 @@ import docx
 from docx.oxml import parse_xml
 
 from ..paths import resource_path
-from .calendar_logic import DayRow, month_total
+from .calendar_logic import DAY_OFF, DayRow, is_task_system
 from .holidays_pl import MONTHS_PL
 from .storage import ABSENCE_CODES, Employee, Settings
 from .timeutil import format_hours
@@ -25,11 +29,16 @@ SEGOE = ('<w:rFonts w:ascii="Segoe UI" w:hAnsi="Segoe UI" '
          'w:eastAsia="Times New Roman" w:cs="Segoe UI"/>')
 
 # Szerokości kolumn (suma = 9072 twips = szerokość tekstu na A4 przy marginesach 2,5 cm)
-COL_WIDTHS = [720, 1380, 1700, 800, 800, 1050, 960, 1662]
-HEADERS = ["Dzień", "Dzień tygodnia", "Podpis pracownika", "Od godz.", "Do godz.",
-           "Razem godz.", "Uwagi", "Podpis kierownika"]
+EMP_WIDTHS = [720, 1380, 1700, 800, 800, 1050, 960, 1662]
+EMP_HEADERS = ["Dzień", "Dzień tygodnia", "Podpis pracownika", "Od godz.", "Do godz.",
+               "Razem godz.", "Uwagi", "Podpis kierownika"]
+MGR_WIDTHS = [720, 2150, 1900, 1150, 1250, 1902]
+MGR_HEADERS = ["Dzień", "Dzień tygodnia", "Podpis pracownika", "Obecność", "Uwagi",
+               "Podpis przełożonego"]
 
-SHADE = {"saturday": "C6D9F1", "sunday": "D99594", "holiday": "D99594"}
+# kolory dni wolnych – zgodnie z wzorami użytkownika
+SHADE_EMP = {"saturday": "C6D9F1", "sunday": "D99594", "holiday": "D99594"}
+SHADE_MGR = {"saturday": "DBE5F1", "sunday": "D99594", "holiday": "D99594"}
 
 
 def _run(text: str, *, size: int = 24, bold: bool = False, italic: bool = False,
@@ -41,11 +50,11 @@ def _run(text: str, *, size: int = 24, bold: bool = False, italic: bool = False,
     return f"<w:r><w:rPr>{props}</w:rPr>{t}{br}</w:r>"
 
 
-def _para(runs: str, *, jc: str = "left", before: int = 0, after: int = 0,
-          size: int = 24, fonts: str = TNR, keep_next: bool = False) -> str:
-    ppr = ('<w:pStyle w:val="Normal"/>' + ("<w:keepNext/>" if keep_next else "") +
+def _para(runs: str, *, before: int = 0, after: int = 0, size: int = 24,
+          fonts: str = TNR) -> str:
+    ppr = ('<w:pStyle w:val="Normal"/>'
            f'<w:spacing w:before="{before}" w:after="{after}" w:line="240" w:lineRule="auto"/>'
-           f'<w:jc w:val="{jc}"/>'
+           '<w:jc w:val="left"/>'
            f'<w:rPr>{fonts}<w:sz w:val="{size}"/><w:szCs w:val="{size}"/></w:rPr>')
     return f"<w:p {NS}><w:pPr>{ppr}</w:pPr>{runs}</w:p>"
 
@@ -64,8 +73,9 @@ def _cell(width: int, text: str = "", *, bold: bool = False, size: int = 22,
     return f"<w:tc><w:tcPr>{tcpr}</w:tcPr>{p}</w:tc>"
 
 
-def _row(cells: list[str], height: int) -> str:
-    return (f'<w:tr><w:trPr><w:cantSplit/><w:trHeight w:val="{height}" w:hRule="atLeast"/>'
+def _row(cells: list[str], height: int, header: bool = False) -> str:
+    extra = "<w:tblHeader/>" if header else ""
+    return (f'<w:tr><w:trPr><w:cantSplit/>{extra}<w:trHeight w:val="{height}" w:hRule="atLeast"/>'
             f'</w:trPr>{"".join(cells)}</w:tr>')
 
 
@@ -75,26 +85,27 @@ def _note_cell(width: int, note: str, fill: str | None) -> str:
     return _cell(width, note, size=size, fill=fill)
 
 
-def _table(rows: list[DayRow]) -> str:
+def _table_open(widths: list[int]) -> list[str]:
     border = '<w:{0} w:val="single" w:sz="4" w:space="0" w:color="000000"/>'
     borders = "".join(border.format(s) for s in
                       ("top", "left", "bottom", "right", "insideH", "insideV"))
-    total = sum(COL_WIDTHS)
     xml = [f'<w:tbl {NS}><w:tblPr><w:tblStyle w:val="Tabela-Siatka"/>'
-           f'<w:tblW w:w="{total}" w:type="dxa"/><w:jc w:val="center"/>'
+           f'<w:tblW w:w="{sum(widths)}" w:type="dxa"/><w:jc w:val="center"/>'
            f'<w:tblBorders>{borders}</w:tblBorders><w:tblLayout w:type="fixed"/>'
            '<w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="70" w:type="dxa"/>'
            '<w:bottom w:w="0" w:type="dxa"/><w:right w:w="70" w:type="dxa"/></w:tblCellMar>'
            '<w:tblLook w:val="04a0"/></w:tblPr><w:tblGrid>']
-    xml += [f'<w:gridCol w:w="{w}"/>' for w in COL_WIDTHS]
+    xml += [f'<w:gridCol w:w="{w}"/>' for w in widths]
     xml.append("</w:tblGrid>")
+    return xml
 
-    head = [_cell(w, t, bold=True) for w, t in zip(COL_WIDTHS, HEADERS)]
-    xml.append(_row(head, 416).replace("<w:cantSplit/>", "<w:cantSplit/><w:tblHeader/>"))
 
+def _table_employee(rows: list[DayRow]) -> str:
+    w = EMP_WIDTHS
+    xml = _table_open(w)
+    xml.append(_row([_cell(wi, t, bold=True) for wi, t in zip(w, EMP_HEADERS)], 416, header=True))
     for r in rows:
-        fill = SHADE.get(r.kind) if r.shaded else None
-        w = COL_WIDTHS
+        fill = SHADE_EMP.get(r.kind) if r.shaded else None
         cells = [
             _cell(w[0], str(r.day), fill=fill),
             _cell(w[1], r.weekday, fill=fill),
@@ -110,58 +121,84 @@ def _table(rows: list[DayRow]) -> str:
     return "".join(xml)
 
 
+def _table_manager(rows: list[DayRow]) -> str:
+    w = MGR_WIDTHS
+    xml = _table_open(w)
+    xml.append(_row([_cell(wi, t, bold=True) for wi, t in zip(w, MGR_HEADERS)], 416, header=True))
+    for r in rows:
+        fill = SHADE_MGR.get(r.kind)
+        weekday = f"{r.weekday} – ŚWIĘTO" if r.holiday_name else r.weekday
+        day_off = r.note == DAY_OFF
+        cells = [
+            _cell(w[0], str(r.day), fill=fill),
+            _cell(w[1], weekday, fill=fill),
+            _cell(w[2], DAY_OFF if day_off else "", fill=fill),   # jak we wzorze: w kol. podpisu
+            _cell(w[3], "", fill=fill),
+            _note_cell(w[4], "" if day_off else r.note, fill),
+            _cell(w[5], "", fill=fill),
+        ]
+        xml.append(_row(cells, 340))
+    xml.append("</w:tbl>")
+    return "".join(xml)
+
+
 def _legend() -> str:
     runs = []
     items = list(ABSENCE_CODES.items())
     for i, (code, desc) in enumerate(items):
         runs.append(_run(code, size=14, bold=True, fonts=SEGOE))
         sep = ", " if i < len(items) - 1 else "."
-        runs.append(_run(f" – {desc}{sep}" + ("" if sep == "." else ""), size=14, fonts=SEGOE))
-    return _para("".join(runs), jc="left", before=120, after=0, size=14, fonts=SEGOE)
-
-
-def _norm_text(emp: Employee, rows: list[DayRow]) -> str:
-    if emp.norm_auto:
-        return format_hours(month_total(rows)) or "0"
-    return (emp.norm_manual or "").strip() or "xx"
+        runs.append(_run(f" – {desc}{sep}", size=14, fonts=SEGOE))
+    return _para("".join(runs), before=120, after=0, size=14, fonts=SEGOE)
 
 
 def _header_paragraphs(emp: Employee, st: Settings, year: int, month: int,
-                       rows: list[DayRow]) -> list[str]:
-    jc = "left" if st.header_align == "left" else "center"
+                       norm_hours: float) -> list[str]:
+    """Nagłówek zawsze wyrównany do lewej."""
     d = st.keep_descriptors
+    norm = format_hours(norm_hours) or "0"
+    title = _para(_run(st.org_name, bold=True, italic=True), after=240)
+
+    if is_task_system(emp):   # lista kierownika
+        month_name = MONTHS_PL[month - 1].capitalize()
+        p2 = _para(_run("Lista obecności – ") + _run(f"{month_name} {year}", bold=True)
+                   + _run(f" - {norm} godz."), after=120)
+        line3 = [_run(f"Dział:  {emp.contract} "), _run(f" {emp.name} ", bold=True)]
+        if d:
+            line3.append(_run("( imię i nazwisko kierownika )"))
+            line3.append(f"<w:r><w:rPr>{TNR}<w:sz w:val=\"24\"/></w:rPr><w:br/></w:r>")
+            line3.append(_run(emp.time_system))
+        else:
+            line3.append(_run(f", {emp.time_system}"))
+        return [title, p2, _para("".join(line3), after=200)]
+
     month_name = MONTHS_PL[month - 1]
-
-    title = _para(_run(st.org_name, bold=True, italic=True), jc=jc, after=240)
-
-    line2 = [_run("Lista obecności – "),
-             _run(month_name, bold=True)]
+    line2 = [_run("Lista obecności – "), _run(month_name, bold=True)]
     if d:
         line2.append(_run(" ( miesiąc )"))
     line2 += [_run(f" {year}", bold=True),
-              _run(f" ( wymiar czasu pracy  – {_norm_text(emp, rows)} godz. )")]
-    p2 = _para("".join(line2), jc=jc, after=120)
+              _run(f" ( wymiar czasu pracy  – {norm} godz. )")]
+    p2 = _para("".join(line2), after=120)
 
     line3 = [_run(f"Dział:  {emp.contract} "), _run(f" {emp.name} ", bold=True)]
-    if d:
-        line3.append(_run("( imię i nazwisko pracownika )"))
     if d:  # opisy w nawiasach wydłużają linię – system czasu pracy w osobnym wierszu
+        line3.append(_run("( imię i nazwisko pracownika )"))
         line3.append(f"<w:r><w:rPr>{TNR}<w:sz w:val=\"24\"/></w:rPr><w:br/></w:r>")
         line3.append(_run(emp.time_system))
     else:
         line3.append(_run(f", {emp.time_system}"))
-    p3 = _para("".join(line3), jc=jc, after=200)
-    return [title, p2, p3]
+    return [title, p2, _para("".join(line3), after=200)]
 
 
 def build_docx(emp: Employee, st: Settings, year: int, month: int,
-               rows: list[DayRow], out_path: Path) -> Path:
+               rows: list[DayRow], out_path: Path, norm_hours: float) -> Path:
     template = resource_path("assets/szablon.docx")
     document = docx.Document(str(template))
     body = document.element.body
     sect = body[-1]  # sectPr strony (A4, marginesy 2,5 cm)
 
-    parts = _header_paragraphs(emp, st, year, month, rows) + [_table(rows), _legend()]
+    table = _table_manager(rows) if is_task_system(emp) else _table_employee(rows)
+    parts = _header_paragraphs(emp, st, year, month, norm_hours) + [table, _legend()]
     for xml in parts:
         sect.addprevious(parse_xml(xml))
 

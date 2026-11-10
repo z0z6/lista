@@ -91,6 +91,9 @@ class Segmented(QFrame):
         self._group.button(0).setChecked(True)
         self._group.idClicked.connect(self.changed.emit)
 
+    def set_button_visible(self, i: int, visible: bool):
+        self._group.button(i).setVisible(visible)
+
     def set_index(self, i: int):
         self._group.button(i).setChecked(True)
         self.changed.emit(i)

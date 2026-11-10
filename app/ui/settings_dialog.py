@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QDialog, QFileDialog, QGridLayout, QHBoxLayout, QLabel,
-                               QLineEdit, QPushButton, QVBoxLayout, QComboBox)
+                               QLineEdit, QPushButton, QVBoxLayout)
 
 from ..core.storage import Settings
 from .widgets import Switch
@@ -44,17 +44,11 @@ class SettingsDialog(QDialog):
         self.holiday_label.setMaxLength(12)
         self._row(grid, 2, "Wpis w „Uwagach” w święta", self.holiday_label)
 
-        self.align = QComboBox()
-        self.align.addItem("Wyśrodkowany", "center")
-        self.align.addItem("Do lewej", "left")
-        self.align.setCurrentIndex(0 if settings.header_align == "center" else 1)
-        self._row(grid, 3, "Wyrównanie nagłówka", self.align)
-
         self.descr = Switch(settings.keep_descriptors)
-        self._row(grid, 4, "Opisy w nawiasach\n(„( miesiąc )”, „( imię i nazwisko )”)", self.descr)
+        self._row(grid, 3, "Opisy w nawiasach\n(„( miesiąc )”, „( imię i nazwisko )”)", self.descr)
 
         self.online = Switch(settings.online_holidays)
-        self._row(grid, 5, "Pobieraj święta z internetu", self.online)
+        self._row(grid, 4, "Pobieraj święta z internetu", self.online)
 
         hint = QLabel("Gdy internet jest niedostępny, święta są wyliczane lokalnie – "
                       "lista zawsze wygeneruje się poprawnie.")
@@ -96,7 +90,6 @@ class SettingsDialog(QDialog):
         s.org_name = self.org.text().strip() or s.org_name
         s.output_dir = self.out.text().strip()
         s.holiday_label = self.holiday_label.text().strip()
-        s.header_align = self.align.currentData()
         s.keep_descriptors = self.descr.isChecked()
         s.online_holidays = self.online.isChecked()
         self.accept()
